@@ -779,33 +779,6 @@ local function static_app_search_item(version)
     }
 end
 
-local function normalize_whitespace(value)
-    local text = trim(value)
-    text = text:gsub("%s+", " ")
-    return trim(text)
-end
-
-local function html_entity_decode(value)
-    local text = tostring(value or "")
-    text = text:gsub("&quot;", '"')
-    text = text:gsub("&#34;", '"')
-    text = text:gsub("&#39;", "'")
-    text = text:gsub("&#x27;", "'")
-    text = text:gsub("&apos;", "'")
-    text = text:gsub("&amp;", "&")
-    text = text:gsub("&lt;", "<")
-    text = text:gsub("&gt;", ">")
-    return text
-end
-
-local function short_summary(value)
-    local text = normalize_whitespace(value)
-    if text == "" then return nil end
-    local sentence = text:match("^(.-[%.%!%?])%s") or text
-    if #sentence <= 160 then return sentence end
-    return sentence:sub(1, 157) .. "..."
-end
-
 local function url_encode_component(value)
     local text = tostring(value or "")
     return (text:gsub("([^%w%-_%.~])", function(char)
@@ -872,36 +845,6 @@ local function build_remote_skill_search_item(source, skill_name, installs)
             installs = installs,
         },
     }
-end
-
-local function extract_skill_page_description(raw)
-    local text = tostring(raw or "")
-    for block in text:gmatch('<script type="application/ld%+json">(.-)</script>') do
-        local decoded = select(1, decode_json(block))
-        if type(decoded) == "table" and trim(read_field(decoded, "@type") or "") == "SoftwareApplication" then
-            local description = normalize_whitespace(read_field(decoded, "description"))
-            if description ~= "" then return description end
-        end
-    end
-    local meta_description = text:match('<meta name="description" content="([^"]+)"')
-    meta_description = normalize_whitespace(html_entity_decode(meta_description))
-    if meta_description ~= "" then return meta_description end
-    return nil
-end
-
-local function enrich_remote_skill_search_item(context, item)
-    if type(item) ~= "table" then return item end
-    local url = trim(item.homepage or "")
-    if url == "" then return item end
-    local result = run_command(context, "curl -fsSL " .. shell_quote(url))
-    if result == nil or not is_command_success(result) then return item end
-    local description = extract_skill_page_description(result.stdout or "")
-    if description == nil or description == "" then return item end
-    item.summary = short_summary(description) or item.summary
-    item.description = description
-    item.extraFields = type(item.extraFields) == "table" and item.extraFields or {}
-    item.extraFields.descriptionSource = url
-    return item
 end
 
 local function push_search_item(results, seen, item)
@@ -1752,7 +1695,7 @@ function plugin.search(context, prompt)
                 local skill_name = trim(first_nonempty(read_field(entry, "skillId"), read_field(entry, "name")) or "")
                 local installs = read_field(entry, "installs")
                 push_search_item(results, seen, build_remote_repo_search_item(source, installs))
-                push_search_item(results, seen, enrich_remote_skill_search_item(context, build_remote_skill_search_item(source, skill_name, installs)))
+                push_search_item(results, seen, build_remote_skill_search_item(source, skill_name, installs))
             end
         end
     end
