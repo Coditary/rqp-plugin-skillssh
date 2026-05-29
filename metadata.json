@@ -1,0 +1,8 @@
+{
+  "formatVersion": 1,
+  "name": "skillssh",
+  "version": "0.1.0",
+  "summary": "ReqPack wrapper for skills.sh CLI and shared skill cache projection",
+  "description": "ReqPack Lua wrapper plugin for skills.sh repo and skill installs with plugin-managed shared AICache metadata and runtime projections",
+  "license": "MIT"
+}
