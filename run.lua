@@ -779,6 +779,106 @@ local function static_app_search_item(version)
     }
 end
 
+local function url_encode_component(value)
+    local text = tostring(value or "")
+    return (text:gsub("([^%w%-_%.~])", function(char)
+        return string.format("%%%02X", string.byte(char))
+    end))
+end
+
+local function is_supported_remote_source(source)
+    local text = trim(source)
+    return text:match("^[A-Za-z0-9_.%-]+/[A-Za-z0-9_.%-]+$") ~= nil
+end
+
+local function remote_source_page_url(source)
+    return APP_HOMEPAGE .. "/" .. trim(source)
+end
+
+local function remote_source_origin_url(source)
+    local text = trim(source)
+    if is_supported_remote_source(text) then
+        return "https://github.com/" .. text
+    end
+    return remote_source_page_url(text)
+end
+
+local function build_remote_repo_search_item(source, installs)
+    local text = trim(source)
+    if text == "" or not is_supported_remote_source(text) then return nil end
+    return {
+        name = text,
+        packageId = text,
+        version = nil,
+        latestVersion = nil,
+        summary = "skills.sh source repo",
+        description = "skills.sh source repo",
+        homepage = remote_source_page_url(text),
+        sourceUrl = remote_source_origin_url(text),
+        packageType = "repo",
+        type = "package",
+        extraFields = {
+            source = text,
+            installs = installs,
+        },
+    }
+end
+
+local function build_remote_skill_search_item(source, skill_name, installs)
+    local normalized_source = trim(source)
+    local normalized_skill_name = trim(skill_name)
+    if normalized_source == "" or normalized_skill_name == "" or not is_supported_remote_source(normalized_source) then return nil end
+    return {
+        name = normalized_source .. "/" .. normalized_skill_name,
+        packageId = normalized_source .. "/" .. normalized_skill_name,
+        version = nil,
+        latestVersion = nil,
+        summary = "skills.sh skill",
+        description = "skills.sh skill",
+        homepage = remote_source_page_url(normalized_source) .. "/" .. normalized_skill_name,
+        sourceUrl = remote_source_origin_url(normalized_source),
+        packageType = "skill",
+        type = "package",
+        extraFields = {
+            source = normalized_source,
+            skillName = normalized_skill_name,
+            installs = installs,
+        },
+    }
+end
+
+local function push_search_item(results, seen, item)
+    local key = item and trim(item.packageId or item.name or "") or ""
+    if item == nil or key == "" or seen[key] then return end
+    seen[key] = true
+    results[#results + 1] = item
+end
+
+local function query_looks_like_app_search(query)
+    local text = lower(trim(query))
+    return text == ""
+        or text == APP_PACKAGE_NAME
+        or text == "skills.sh"
+        or text == "skills"
+        or text == "skills cli"
+        or text == "skills launcher"
+        or text == "skillssh"
+        or text:find("skillssh", 1, true) ~= nil
+end
+
+local function fetch_remote_search_results(context, query)
+    local url = APP_HOMEPAGE .. "/api/search?q=" .. url_encode_component(query) .. "&limit=15"
+    local result = run_command(context, "curl -fsSL " .. shell_quote(url))
+    if result == nil or not is_command_success(result) then
+        return nil, first_nonempty(result and result.stderr, result and result.stdout, "skillssh remote search failed")
+    end
+    local decoded, err = decode_json(result.stdout or "{}")
+    if decoded == nil then return nil, err end
+    local items = read_field(decoded, "skills")
+    if type(items) ~= "table" then return {}, nil end
+    return items, nil
+end
+
 local function build_projection_item(record)
     if type(record) ~= "table" then return nil end
     local package_id = trim(read_field(record, "package_id") or "")
@@ -1580,11 +1680,28 @@ function plugin.outdated(context)
 end
 
 function plugin.search(context, prompt)
-    local query = lower(trim(prompt))
+    local query = trim(prompt)
     local results = {}
-    if query == "" or query == APP_PACKAGE_NAME or query:find("skills", 1, true) ~= nil or query:find("skills.sh", 1, true) ~= nil or query:find("skillssh", 1, true) ~= nil then
-        results[#results + 1] = static_app_search_item(nil)
+    local seen = {}
+    if query_looks_like_app_search(query) then
+        push_search_item(results, seen, static_app_search_item(nil))
+    else
+        local entries, err = fetch_remote_search_results(context, query)
+        if entries == nil then
+            log_message(context, "warn", "skillssh search degraded: " .. tostring(err or "unknown error"))
+        else
+            for _, entry in ipairs(entries) do
+                local source = trim(read_field(entry, "source") or "")
+                local skill_name = trim(first_nonempty(read_field(entry, "skillId"), read_field(entry, "name")) or "")
+                local installs = read_field(entry, "installs")
+                push_search_item(results, seen, build_remote_repo_search_item(source, installs))
+                push_search_item(results, seen, build_remote_skill_search_item(source, skill_name, installs))
+            end
+        end
     end
+    table.sort(results, function(left, right)
+        return lower(left.packageId or left.name or "") < lower(right.packageId or right.name or "")
+    end)
     emit_event(context, "searched", results)
     return results
 end
@@ -1642,6 +1759,7 @@ function plugin.getSecurityMetadata()
             { kind = "user-home-subpath", value = ".config/opencode/skills" },
         },
         networkScopes = {
+            { host = "skills.sh", scheme = "https" },
             { host = "github.com", scheme = "https" },
             { host = "api.github.com", scheme = "https" },
         },
